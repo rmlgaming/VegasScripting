@@ -1,0 +1,14 @@
+# Build results
+[Bb]in/
+[Oo]bj/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Vegas SDK (don't commit Vegas DLLs)
+**/ScriptPortal.Vegas.dll
+**/Vegas.Shared.dll
