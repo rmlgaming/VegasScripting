@@ -13,7 +13,6 @@ namespace VegasScripting
 			public Timecode OriginalStart { get; set; }
 			public Timecode OriginalEnd { get; set; }
 			public Timecode NewStart { get; set; }
-			public Marker TransitionMarker { get; set; }
 			public Timecode FadeLength { get; set; }
 		}
 
@@ -28,21 +27,19 @@ namespace VegasScripting
 		public void FromVegas(Vegas vegas)
 		{
 			VideoTrack targetTrack = TrackSelection.GetTargetTrack(vegas);
-			CollapseTracksOptimized(targetTrack);
+			if (targetTrack == null)
+			{
+				System.Windows.Forms.MessageBox.Show("No track selected or no video track found.", "Error");
+				return;
+			}
 
-			// Debug output
-			System.Text.StringBuilder debug = new System.Text.StringBuilder();
-			debug.AppendLine("Final clip positions:");
-			foreach (TrackEvent te in targetTrack.Events.OrderBy(e => e.Start))
+			if (targetTrack.Events.Count == 0)
 			{
-				debug.AppendLine($"Clip {te.Index}: Start={te.Start.ToMilliseconds()}ms, End={te.End.ToMilliseconds()}ms, Length={te.Length.ToMilliseconds()}ms");
+				System.Windows.Forms.MessageBox.Show("Selected track has no events.", "Error");
+				return;
 			}
-			debug.AppendLine("\nTransition markers:");
-			foreach (Marker m in vegas.Project.Markers.Where(m => m.Label == "v").OrderBy(m => m.Position))
-			{
-				debug.AppendLine($"Marker 'v' at {m.Position.ToMilliseconds()}ms");
-			}
-			System.Windows.Forms.MessageBox.Show(debug.ToString(), "Debug Info");
+
+			CollapseTracksOptimized(targetTrack);
 		}
 
 		private void CollapseTracksOptimized(VideoTrack mainTrack)
@@ -53,8 +50,6 @@ namespace VegasScripting
 
 			// Phase 1: Calculate all new positions
 			Timecode currentPosition = new Timecode(0);
-			System.Text.StringBuilder calcDebug = new System.Text.StringBuilder();
-			calcDebug.AppendLine("Phase 1 - Calculating positions:");
 
 			foreach (TrackEvent trackEvent in mainTrack.Events.OrderBy(te => te.Start))
 			{
@@ -62,47 +57,39 @@ namespace VegasScripting
 				{
 					Event = trackEvent,
 					OriginalStart = trackEvent.Start,
-					OriginalEnd = trackEvent.End
+					OriginalEnd = trackEvent.End,
+					FadeLength = new Timecode(0)
 				};
 
 				if (trackEvent.Index == 0)
 				{
 					info.NewStart = new Timecode(0);
 					currentPosition = trackEvent.Length;
-					calcDebug.AppendLine($"Clip {trackEvent.Index}: NewStart=0ms, Length={trackEvent.Length.ToMilliseconds()}ms");
 				}
 				else
 				{
 					TrackEventInfo previousInfo = trackInfos[trackEvent.Index - 1];
 
-					// Find transition marker in ORIGINAL positions before any moves
-					Marker transitionMarker = FindOriginalTransitionMarker(proj, previousInfo.OriginalEnd);
-
-					if (transitionMarker != null)
+					// Check if previous clip has a fade out (indicates crossfade)
+					Timecode fadeOutLength = new Timecode(0);
+					if (previousInfo.Event.FadeOut != null && previousInfo.Event.FadeOut.Length != null)
 					{
-						// Calculate fade length from original positions
-						info.FadeLength = previousInfo.OriginalEnd - transitionMarker.Position;
-						info.TransitionMarker = transitionMarker;
+						fadeOutLength = previousInfo.Event.FadeOut.Length;
+					}
 
-						// Clip starts before the end of previous clip (overlap by fade length)
-						// currentPosition is where the previous clip ends in the NEW timeline
+					if (fadeOutLength.ToMilliseconds() > 0)
+					{
+						// Crossfade: overlap by fade length
+						info.FadeLength = fadeOutLength;
 						Timecode previousNewEnd = previousInfo.NewStart + previousInfo.Event.Length;
 						info.NewStart = previousNewEnd - info.FadeLength;
-
-						calcDebug.AppendLine($"Clip {trackEvent.Index}: Transition found!");
-						calcDebug.AppendLine($"  PreviousNewEnd={previousNewEnd.ToMilliseconds()}ms");
-						calcDebug.AppendLine($"  FadeLength={info.FadeLength.ToMilliseconds()}ms");
-						calcDebug.AppendLine($"  NewStart={info.NewStart.ToMilliseconds()}ms (should overlap)");
-
-						// Current position advances to the end of this clip
 						currentPosition = info.NewStart + trackEvent.Length;
 					}
 					else
 					{
-						// No transition, clip starts at end of previous
+						// No crossfade: consecutive clips
 						info.NewStart = currentPosition;
 						currentPosition = info.NewStart + trackEvent.Length;
-						calcDebug.AppendLine($"Clip {trackEvent.Index}: No transition, NewStart={info.NewStart.ToMilliseconds()}ms");
 					}
 				}
 
@@ -111,8 +98,6 @@ namespace VegasScripting
 				// Calculate marker repositions for this track event
 				CalculateMarkerRepositions(proj, info, markerInfos);
 			}
-
-			System.Windows.Forms.MessageBox.Show(calcDebug.ToString(), "Calculation Debug");
 
 			// Phase 2: Apply all changes
 
@@ -126,45 +111,17 @@ namespace VegasScripting
 				}
 			}
 
-			// Apply track changes in FORWARD order (so earlier clips are in place before later ones)
+			// Apply track changes in FORWARD order
 			foreach (TrackEventInfo info in trackInfos.OrderBy(i => i.Event.Index))
 			{
 				info.Event.AdjustStartLength(info.NewStart, info.Event.Length, false);
 
-				if (info.TransitionMarker != null && info.Event.Index > 0)
+				// Set fade in on current clip to match fade out of previous clip (for crossfade)
+				if (info.FadeLength.ToMilliseconds() > 0 && info.Event.Index > 0 && info.Event.FadeIn != null)
 				{
-					TrackEventInfo previousInfo = trackInfos[info.Event.Index - 1];
-					previousInfo.Event.FadeOut.Length = info.FadeLength;
 					info.Event.FadeIn.Length = info.FadeLength;
 				}
 			}
-		}
-
-		private Marker FindOriginalTransitionMarker(Project proj, Timecode previousEventEnd)
-		{
-			// Find transition markers (labeled "v") at or before the previous event end
-			// Only consider markers that are actually at the event boundary
-			var candidates = proj.Markers
-				.Where(m => m.Label == "v")
-				.Where(m => m.Position >= previousEventEnd - new Timecode(10) && m.Position <= previousEventEnd)
-				.OrderByDescending(m => m.Position)
-				.ToList();
-
-			// Debug
-			System.Text.StringBuilder markerDebug = new System.Text.StringBuilder();
-			markerDebug.AppendLine($"Looking for transition marker near {previousEventEnd.ToMilliseconds()}ms");
-			markerDebug.AppendLine($"Search range: {(previousEventEnd - new Timecode(10)).ToMilliseconds()}ms to {previousEventEnd.ToMilliseconds()}ms");
-			markerDebug.AppendLine($"Found {candidates.Count} candidates");
-			foreach (var c in candidates)
-			{
-				markerDebug.AppendLine($"  Candidate at {c.Position.ToMilliseconds()}ms");
-			}
-			if (candidates.Count > 0)
-			{
-				System.Windows.Forms.MessageBox.Show(markerDebug.ToString(), "Transition Marker Search");
-			}
-
-			return candidates.FirstOrDefault();
 		}
 
 		private void CalculateMarkerRepositions(Project proj, TrackEventInfo trackInfo, List<MarkerInfo> markerInfos)
@@ -175,12 +132,10 @@ namespace VegasScripting
 				return;
 
 			// Find markers that need to move with this track event
-			// Markers move if they're within the track's original range
-			// BUT exclude transition markers at the END (they belong to the next clip's calculation)
 			IEnumerable<Marker> affectedMarkers = proj.Markers.Where(m =>
-				m.Position > trackInfo.OriginalStart && // Exclude markers exactly at start
-				m.Position < trackInfo.OriginalEnd && // Exclude markers at or after end
-				!markerInfos.Any(mi => mi.Marker == m) // Not already processed
+				m.Position > trackInfo.OriginalStart &&
+				m.Position < trackInfo.OriginalEnd &&
+				!markerInfos.Any(mi => mi.Marker == m)
 			);
 
 			foreach (Marker marker in affectedMarkers)
@@ -192,32 +147,6 @@ namespace VegasScripting
 					OriginalPosition = marker.Position,
 					NewPosition = marker.Position + shift
 				});
-			}
-
-			// Handle transition marker at the END of this track (if exists)
-			// This marker needs special handling - it moves to maintain position relative to this track's new end
-			if (trackInfo.TransitionMarker == null)
-			{
-				Marker transitionAtEnd = proj.Markers
-					.Where(m => m.Label == "v")
-					.Where(m => m.Position >= trackInfo.OriginalEnd - new Timecode(10) && m.Position <= trackInfo.OriginalEnd)
-					.OrderByDescending(m => m.Position)
-					.FirstOrDefault();
-
-				if (transitionAtEnd != null && !markerInfos.Any(mi => mi.Marker == transitionAtEnd))
-				{
-					// Calculate new position: maintain the same offset from the end
-					Timecode offsetFromEnd = trackInfo.OriginalEnd - transitionAtEnd.Position;
-					Timecode newTrackEnd = trackInfo.NewStart + trackInfo.Event.Length;
-
-					markerInfos.Add(new MarkerInfo
-					{
-						Marker = transitionAtEnd,
-						Label = transitionAtEnd.Label,
-						OriginalPosition = transitionAtEnd.Position,
-						NewPosition = newTrackEnd - offsetFromEnd
-					});
-				}
 			}
 		}
 	}

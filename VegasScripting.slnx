@@ -4,5 +4,6 @@
   <Project Path="CSLargeSlow/CSLargeSlow.csproj" Id="e04f730d-1874-4cc6-9d5c-089ec7f53778" />
   <Project Path="CSSmallFast/CSSmallFast.csproj" Id="3d5b9c55-ccfa-4745-9bfc-70541a1b3559" />
   <Project Path="CSSmallSlow/CSSmallSlow.csproj" Id="2f237e2f-56b2-4dbe-af07-88e32cf20c98" />
+  <Project Path="CSSolve/CSSolve.csproj" Id="a9b3c6eb-de1b-409c-a61f-e63e58feed64" />
   <Project Path="CSUtils/CSUtils.csproj" Id="80ab6416-b10a-4885-8a66-59e7ec03a238" />
 </Solution>
