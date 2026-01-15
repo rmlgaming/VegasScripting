@@ -19,16 +19,7 @@ namespace CSUtils
 				}
 			}
 
-			// If no "main" track found, return the first video track
-			foreach (Track track in vegas.Project.Tracks)
-			{
-				if (track.IsVideo())
-				{
-					return (VideoTrack)track;
-				}
-			}
-
-			return null;
+			throw new Exception("No video track named 'main' found.");
 		}
 	}
 
