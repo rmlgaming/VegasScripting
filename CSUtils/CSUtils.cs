@@ -32,6 +32,9 @@ namespace CSUtils
 		{
 			Random random = new Random();
 
+			// Collect timing adjustments for other tracks
+			List<TimingAdjustment> timingAdjustments = new List<TimingAdjustment>();
+
 			foreach (TrackEvent trackEvent in track.Events)
 			{
 				if (!trackEvent.Selected)
@@ -39,6 +42,8 @@ namespace CSUtils
 					continue;
 				}
 
+				Timecode oldStart = trackEvent.Start;
+				Timecode oldEnd = trackEvent.End;
 				Timecode oldLength = trackEvent.Length;
 
 				Timecode newLength = new Timecode(oldLength.ToMilliseconds() / speedModification);
@@ -96,6 +101,19 @@ namespace CSUtils
 				trackEvent.AdjustPlaybackRate(desiredPlaybackRate, true);
 				trackEvent.Length = newLengthRounded;
 
+				// Calculate new end position
+				Timecode newEnd = trackEvent.Start + newLengthRounded;
+
+				// Store the adjustment info for other tracks
+				timingAdjustments.Add(new TimingAdjustment
+				{
+					OldStart = oldStart,
+					OldEnd = oldEnd,
+					NewStart = oldStart,
+					NewEnd = newEnd,
+					ActualSpeedModification = actualSpeedModification
+				});
+
 				foreach (Marker m in transitionMarkers)
 				{
 					Timecode markerRelativePosition = m.Position - trackEvent.Start;
@@ -104,6 +122,59 @@ namespace CSUtils
 					MoveMarker(track.Project, m, newPosition);
 				}
 			}
+
+			// Now adjust clips on other tracks
+			AdjustOtherTracks(track.Project, timingAdjustments);
+		}
+
+		private static void AdjustOtherTracks(Project project, List<TimingAdjustment> adjustments)
+		{
+			foreach (Track track in project.Tracks)
+			{
+				// Skip "main" and "music" tracks
+				if (track.Name != null)
+				{
+					string trackNameLower = track.Name.ToLower();
+					if (trackNameLower == "main" || trackNameLower == "music")
+					{
+						continue;
+					}
+				}
+
+				foreach (TrackEvent trackEvent in track.Events)
+				{
+					Timecode eventStart = trackEvent.Start;
+
+					// Check if this clip's start aligns within any adjusted clip
+					foreach (TimingAdjustment adj in adjustments)
+					{
+						// Check if the event starts within the adjusted clip's original range
+						if (eventStart > adj.OldStart && eventStart < adj.OldEnd)
+						{
+							// Calculate the relative position within the original clip
+							double relativePosition = (eventStart.ToMilliseconds() - adj.OldStart.ToMilliseconds()) /
+													 (adj.OldEnd.ToMilliseconds() - adj.OldStart.ToMilliseconds());
+
+							// Calculate the new start position based on the new clip length
+							double newClipLength = adj.NewEnd.ToMilliseconds() - adj.NewStart.ToMilliseconds();
+							double newStartMs = adj.NewStart.ToMilliseconds() + (relativePosition * newClipLength);
+
+							Timecode newStart = new Timecode(newStartMs);
+							trackEvent.Start = newStart;
+							break; // Only adjust based on first matching clip
+						}
+					}
+				}
+			}
+		}
+
+		private class TimingAdjustment
+		{
+			public Timecode OldStart { get; set; }
+			public Timecode OldEnd { get; set; }
+			public Timecode NewStart { get; set; }
+			public Timecode NewEnd { get; set; }
+			public double ActualSpeedModification { get; set; }
 		}
 
 		public static bool IsTransitionMarker(Marker m)
