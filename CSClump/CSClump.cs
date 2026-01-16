@@ -21,16 +21,6 @@ namespace VegasScripting
 		{
 			VideoTrack targetTrack = TrackSelection.GetTargetTrack(vegas);
 			CollapseTracksOptimized(targetTrack, vegas.Project);
-
-			// Debug output
-			System.Text.StringBuilder debug = new System.Text.StringBuilder();
-			debug.AppendLine("Final clip positions:");
-			foreach (TrackEvent te in targetTrack.Events.OrderBy(e => e.Start))
-			{
-				debug.AppendLine($"Clip {te.Index}: Start={te.Start.ToMilliseconds()}ms, End={te.End.ToMilliseconds()}ms");
-				debug.AppendLine($"  FadeIn={te.FadeIn.Length.ToMilliseconds()}ms, FadeOut={te.FadeOut.Length.ToMilliseconds()}ms");
-			}
-			System.Windows.Forms.MessageBox.Show(debug.ToString(), "Debug Info");
 		}
 
 		private void CollapseTracksOptimized(VideoTrack mainTrack, Project proj)
@@ -39,8 +29,6 @@ namespace VegasScripting
 
 			// Phase 1: Calculate all new positions for main track
 			Timecode currentPosition = new Timecode(0);
-			System.Text.StringBuilder calcDebug = new System.Text.StringBuilder();
-			calcDebug.AppendLine("Phase 1 - Calculating positions:");
 
 			foreach (TrackEvent trackEvent in mainTrack.Events.OrderBy(te => te.Start))
 			{
@@ -55,7 +43,6 @@ namespace VegasScripting
 				{
 					info.NewStart = new Timecode(0);
 					currentPosition = trackEvent.Length;
-					calcDebug.AppendLine($"Clip {trackEvent.Index}: NewStart=0ms, Length={trackEvent.Length.ToMilliseconds()}ms");
 				}
 				else
 				{
@@ -76,12 +63,6 @@ namespace VegasScripting
 						Timecode previousNewEnd = previousInfo.NewStart + previousInfo.Event.Length;
 						info.NewStart = previousNewEnd - info.FadeLength;
 
-						calcDebug.AppendLine($"Clip {trackEvent.Index}: Transition found!");
-						calcDebug.AppendLine($"  PrevFadeOut={prevFadeOut.ToMilliseconds()}ms, CurrFadeIn={currFadeIn.ToMilliseconds()}ms");
-						calcDebug.AppendLine($"  FadeLength={info.FadeLength.ToMilliseconds()}ms");
-						calcDebug.AppendLine($"  PreviousNewEnd={previousNewEnd.ToMilliseconds()}ms");
-						calcDebug.AppendLine($"  NewStart={info.NewStart.ToMilliseconds()}ms (overlap)");
-
 						currentPosition = info.NewStart + trackEvent.Length;
 					}
 					else
@@ -89,14 +70,11 @@ namespace VegasScripting
 						// No transition, clip starts at end of previous
 						info.NewStart = currentPosition;
 						currentPosition = info.NewStart + trackEvent.Length;
-						calcDebug.AppendLine($"Clip {trackEvent.Index}: No transition, NewStart={info.NewStart.ToMilliseconds()}ms");
 					}
 				}
 
 				trackInfos.Add(info);
 			}
-
-			System.Windows.Forms.MessageBox.Show(calcDebug.ToString(), "Calculation Debug");
 
 			// Phase 1.5: Calculate shifts for clips on other tracks
 			List<TrackEventInfo> otherTrackInfos = CalculateOtherTrackShifts(proj, mainTrack, trackInfos);
