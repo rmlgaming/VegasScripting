@@ -48,18 +48,17 @@ namespace VegasScripting
 				{
 					TrackEventInfo previousInfo = trackInfos[trackEvent.Index - 1];
 
-					// Check if there's a crossfade between previous and current clip
-					// Both clips need fade in/out set and they should roughly match
-					Timecode prevFadeOut = previousInfo.Event.FadeOut.Length;
-					Timecode currFadeIn = trackEvent.FadeIn.Length;
+					// Check if clips are currently overlapping
+					bool currentlyOverlapping = trackEvent.Start < previousInfo.OriginalEnd;
 
-					if (prevFadeOut.ToMilliseconds() > 0 && currFadeIn.ToMilliseconds() > 0)
+					if (currentlyOverlapping)
 					{
-						// Use the average of the two fade lengths
-						info.FadeLength = new Timecode((prevFadeOut.ToMilliseconds() + currFadeIn.ToMilliseconds()) / 2.0);
+						// Clips are overlapping - preserve the existing overlap amount
+						Timecode existingOverlap = previousInfo.OriginalEnd - trackEvent.Start;
+						info.FadeLength = existingOverlap;
 						info.HasTransition = true;
 
-						// Clip starts before the end of previous clip (overlap by fade length)
+						// Maintain the same overlap in the new timeline
 						Timecode previousNewEnd = previousInfo.NewStart + previousInfo.Event.Length;
 						info.NewStart = previousNewEnd - info.FadeLength;
 
@@ -67,7 +66,7 @@ namespace VegasScripting
 					}
 					else
 					{
-						// No transition, clip starts at end of previous
+						// No overlap, clip starts at end of previous
 						info.NewStart = currentPosition;
 						currentPosition = info.NewStart + trackEvent.Length;
 					}
