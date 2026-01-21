@@ -1,5 +1,6 @@
 <Solution>
   <Project Path="CSClump/CSClump.csproj" Id="0606793a-6a79-4da5-aeab-90dc3ff90bc5" />
+  <Project Path="CSGap/CSGap.csproj" Id="5facc9d4-9737-45b2-9394-a46684431989" />
   <Project Path="CSLargeFast/CSLargeFast.csproj" Id="1a3389a9-ebd7-445b-83f5-97a84b2e2b1e" />
   <Project Path="CSLargeSlow/CSLargeSlow.csproj" Id="e04f730d-1874-4cc6-9d5c-089ec7f53778" />
   <Project Path="CSSmallFast/CSSmallFast.csproj" Id="3d5b9c55-ccfa-4745-9bfc-70541a1b3559" />
