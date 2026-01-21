@@ -1,6 +1,7 @@
 ﻿using ScriptPortal.Vegas;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace CSUtils
 {
@@ -32,7 +33,7 @@ namespace CSUtils
 		{
 			Random random = new Random();
 
-			// Collect timing adjustments for other tracks
+			// Collect timing adjustments - these will cascade
 			List<TimingAdjustment> timingAdjustments = new List<TimingAdjustment>();
 
 			foreach (TrackEvent trackEvent in track.Events)
@@ -104,14 +105,14 @@ namespace CSUtils
 				// Calculate new end position
 				Timecode newEnd = trackEvent.Start + newLengthRounded;
 
-				// Store the adjustment info for other tracks
+				// Store the adjustment info
 				timingAdjustments.Add(new TimingAdjustment
 				{
+					TrackEvent = trackEvent,
 					OldStart = oldStart,
 					OldEnd = oldEnd,
 					NewStart = oldStart,
-					NewEnd = newEnd,
-					ActualSpeedModification = actualSpeedModification
+					NewEnd = newEnd
 				});
 
 				foreach (Marker m in transitionMarkers)
@@ -123,12 +124,77 @@ namespace CSUtils
 				}
 			}
 
-			// Now adjust clips on other tracks
-			AdjustOtherTracks(track.Project, timingAdjustments);
+			// Now cascade adjustments to main track and then to other tracks
+			CascadeAdjustments(track, timingAdjustments);
 		}
 
-		private static void AdjustOtherTracks(Project project, List<TimingAdjustment> adjustments)
+		private static void CascadeAdjustments(Track mainTrack, List<TimingAdjustment> initialAdjustments)
 		{
+			// First, cascade on the main track itself
+			HashSet<TrackEvent> processedMainEvents = new HashSet<TrackEvent>();
+			foreach (var adj in initialAdjustments)
+			{
+				processedMainEvents.Add(adj.TrackEvent);
+			}
+
+			// Get all events on main track sorted by start time
+			var mainTrackEvents = mainTrack.Events
+				.Cast<TrackEvent>()
+				.Where(e => !processedMainEvents.Contains(e))
+				.OrderBy(e => e.Start.ToMilliseconds())
+				.ToList();
+
+			// Process main track events in order, building up adjustments list
+			foreach (var trackEvent in mainTrackEvents)
+			{
+				Timecode eventStart = trackEvent.Start;
+				Timecode oldStart = trackEvent.Start;
+
+				// Check if this clip overlaps with any adjusted clip
+				foreach (TimingAdjustment adj in initialAdjustments)
+				{
+					if (eventStart >= adj.OldStart && eventStart <= adj.OldEnd)
+					{
+						// Calculate proportional position
+						double relativePosition = (eventStart.ToMilliseconds() - adj.OldStart.ToMilliseconds()) /
+												 (adj.OldEnd.ToMilliseconds() - adj.OldStart.ToMilliseconds());
+
+						// Calculate new start
+						double newClipLength = adj.NewEnd.ToMilliseconds() - adj.NewStart.ToMilliseconds();
+						double newStartMs = adj.NewStart.ToMilliseconds() + (relativePosition * newClipLength);
+						Timecode newStart = new Timecode(newStartMs);
+
+						// Move the clip
+						Timecode oldEnd = trackEvent.End;
+						trackEvent.Start = newStart;
+						Timecode newEnd = trackEvent.End;
+
+						// Add this as a new adjustment for cascading
+						initialAdjustments.Add(new TimingAdjustment
+						{
+							TrackEvent = trackEvent,
+							OldStart = oldStart,
+							OldEnd = oldEnd,
+							NewStart = newStart,
+							NewEnd = newEnd
+						});
+
+						processedMainEvents.Add(trackEvent);
+						break;
+					}
+				}
+			}
+
+			// Now apply to all other tracks
+			ApplyAdjustmentsToOtherTracks(mainTrack.Project, initialAdjustments);
+		}
+
+		private static void ApplyAdjustmentsToOtherTracks(Project project, List<TimingAdjustment> adjustments)
+		{
+			// Build groups of events
+			Dictionary<TrackEvent, List<TrackEvent>> eventGroups = BuildEventGroups(project);
+			HashSet<TrackEvent> processedEvents = new HashSet<TrackEvent>();
+
 			foreach (Track track in project.Tracks)
 			{
 				// Skip "main" and "music" tracks
@@ -143,25 +209,126 @@ namespace CSUtils
 
 				foreach (TrackEvent trackEvent in track.Events)
 				{
-					Timecode eventStart = trackEvent.Start;
+					if (processedEvents.Contains(trackEvent))
+					{
+						continue;
+					}
 
-					// Check if this clip's start aligns within any adjusted clip
+					// Get all events in this group
+					List<TrackEvent> groupEvents = eventGroups.ContainsKey(trackEvent)
+						? eventGroups[trackEvent]
+						: new List<TrackEvent> { trackEvent };
+
+					// Find the earliest event in the group
+					TrackEvent earliestEvent = groupEvents.OrderBy(e => e.Start.ToMilliseconds()).First();
+					Timecode groupAnchorStart = earliestEvent.Start;
+
+					// Find matching adjustment
+					TimingAdjustment matchingAdjustment = null;
+					double relativePosition = 0;
+
 					foreach (TimingAdjustment adj in adjustments)
 					{
-						// Check if the event starts within the adjusted clip's original range
-						if (eventStart > adj.OldStart && eventStart < adj.OldEnd)
+						double anchorMs = groupAnchorStart.ToMilliseconds();
+						double oldStartMs = adj.OldStart.ToMilliseconds();
+						double oldEndMs = adj.OldEnd.ToMilliseconds();
+
+						if (anchorMs >= oldStartMs && anchorMs <= oldEndMs)
 						{
-							// Calculate the relative position within the original clip
-							double relativePosition = (eventStart.ToMilliseconds() - adj.OldStart.ToMilliseconds()) /
-													 (adj.OldEnd.ToMilliseconds() - adj.OldStart.ToMilliseconds());
+							double oldLengthMs = oldEndMs - oldStartMs;
+							relativePosition = (anchorMs - oldStartMs) / oldLengthMs;
+							matchingAdjustment = adj;
+							break;
+						}
+					}
 
-							// Calculate the new start position based on the new clip length
-							double newClipLength = adj.NewEnd.ToMilliseconds() - adj.NewStart.ToMilliseconds();
-							double newStartMs = adj.NewStart.ToMilliseconds() + (relativePosition * newClipLength);
+					if (matchingAdjustment != null)
+					{
+						// Calculate new position
+						double newClipLength = matchingAdjustment.NewEnd.ToMilliseconds() - matchingAdjustment.NewStart.ToMilliseconds();
+						double newAnchorStartMs = matchingAdjustment.NewStart.ToMilliseconds() + (relativePosition * newClipLength);
+						Timecode newAnchorStart = new Timecode(newAnchorStartMs);
 
-							Timecode newStart = new Timecode(newStartMs);
-							trackEvent.Start = newStart;
-							break; // Only adjust based on first matching clip
+						// Calculate offset
+						double offsetMs = newAnchorStart.ToMilliseconds() - groupAnchorStart.ToMilliseconds();
+
+						// Apply to all events in group
+						foreach (TrackEvent evt in groupEvents)
+						{
+							Timecode newStart = new Timecode(evt.Start.ToMilliseconds() + offsetMs);
+							evt.Start = newStart;
+							processedEvents.Add(evt);
+						}
+					}
+					else
+					{
+						foreach (TrackEvent evt in groupEvents)
+						{
+							processedEvents.Add(evt);
+						}
+					}
+				}
+			}
+		}
+
+		private static Dictionary<TrackEvent, List<TrackEvent>> BuildEventGroups(Project project)
+		{
+			Dictionary<TrackEvent, List<TrackEvent>> groups = new Dictionary<TrackEvent, List<TrackEvent>>();
+			HashSet<TrackEvent> assignedEvents = new HashSet<TrackEvent>();
+
+			foreach (Track track in project.Tracks)
+			{
+				// Skip "main" and "music" tracks
+				if (track.Name != null)
+				{
+					string trackNameLower = track.Name.ToLower();
+					if (trackNameLower == "main" || trackNameLower == "music")
+					{
+						continue;
+					}
+				}
+
+				foreach (TrackEvent trackEvent in track.Events)
+				{
+					if (assignedEvents.Contains(trackEvent))
+					{
+						continue;
+					}
+
+					// Find all events in the same group
+					List<TrackEvent> groupMembers = new List<TrackEvent>();
+					CollectGroupMembers(trackEvent, groupMembers, assignedEvents);
+
+					// Assign this group to all members
+					foreach (TrackEvent member in groupMembers)
+					{
+						groups[member] = groupMembers;
+						assignedEvents.Add(member);
+					}
+				}
+			}
+
+			return groups;
+		}
+
+		private static void CollectGroupMembers(TrackEvent startEvent, List<TrackEvent> groupMembers, HashSet<TrackEvent> assignedEvents)
+		{
+			if (assignedEvents.Contains(startEvent) || groupMembers.Contains(startEvent))
+			{
+				return;
+			}
+
+			groupMembers.Add(startEvent);
+
+			if (startEvent.Group != null)
+			{
+				foreach (Track track in startEvent.Project.Tracks)
+				{
+					foreach (TrackEvent evt in track.Events)
+					{
+						if (evt.Group == startEvent.Group && !groupMembers.Contains(evt))
+						{
+							CollectGroupMembers(evt, groupMembers, assignedEvents);
 						}
 					}
 				}
@@ -170,11 +337,11 @@ namespace CSUtils
 
 		private class TimingAdjustment
 		{
+			public TrackEvent TrackEvent { get; set; }
 			public Timecode OldStart { get; set; }
 			public Timecode OldEnd { get; set; }
 			public Timecode NewStart { get; set; }
 			public Timecode NewEnd { get; set; }
-			public double ActualSpeedModification { get; set; }
 		}
 
 		public static bool IsTransitionMarker(Marker m)
